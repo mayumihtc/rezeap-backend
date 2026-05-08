@@ -76,6 +76,7 @@ async def extraer_receta(req: VideoRequest):
             if oembed_resp.status_code == 200:
                 oembed_data = oembed_resp.json()
                 titulo_video = oembed_data.get("title", "")
+                descripcion = titulo_video
                 thumbnail_url = oembed_data.get("thumbnail_url", "")
                 if thumbnail_url:
                     thumb_resp = requests.get(thumbnail_url, timeout=10)
