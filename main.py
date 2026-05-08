@@ -33,12 +33,6 @@ def get_youtube_id(url):
             return match.group(1)
     return None
 
-def get_tiktok_id(url):
-    match = re.search(r'tiktok\.com/@[^/]+/video/(\d+)', url)
-    if match:
-        return match.group(1)
-    return None
-
 @app.get("/")
 def root():
     return {"status": "Rezeap backend funcionando"}
@@ -72,7 +66,7 @@ async def extraer_receta(req: VideoRequest):
                         if thumb_resp.status_code == 200:
                             thumbnail_b64 = base64.b64encode(thumb_resp.content).decode('utf-8')
 
-        # TikTok - usar oEmbed API (gratis, sin autenticación)
+        # TikTok
         elif 'tiktok.com' in req.url:
             plataforma = "TikTok"
             oembed_resp = requests.get(
@@ -88,14 +82,6 @@ async def extraer_receta(req: VideoRequest):
                     if thumb_resp.status_code == 200:
                         thumbnail_b64 = base64.b64encode(thumb_resp.content).decode('utf-8')
 
-        # Instagram
-        elif 'instagram.com' in req.url:
-            plataforma = "Instagram"
-            oembed_resp = requests.get(
-                f"https://graph.facebook.com/v18.0/instagram_oembed?url={req.url}&access_token=placeholder",
-                timeout=10
-            )
-
         model = genai.GenerativeModel('gemini-2.5-flash')
 
         prompt = f"""Eres un experto en extraer recetas de cocina de videos de redes sociales.
@@ -105,13 +91,15 @@ Título del video: {titulo_video if titulo_video else 'No disponible'}
 Descripción del video: {descripcion if descripcion else 'No disponible'}
 URL: {req.url}
 
-IMPORTANTE: 
-- Si la descripción tiene ingredientes y pasos, úsalos EXACTAMENTE como aparecen.
-- Si no hay descripción, analiza la miniatura del video y el título para inferir la receta.
-- No inventes ingredientes que no estén en la descripción o visibles en la imagen.
+INSTRUCCIONES:
+- Si la descripción tiene ingredientes, úsalos EXACTAMENTE como aparecen.
+- Si la descripción tiene pasos, úsalos EXACTAMENTE.
+- Si NO hay pasos en la descripción, GENERA pasos detallados y realistas basándote en los ingredientes y el título del video.
+- Siempre debe haber al menos 4 pasos de preparación.
+- El tiempo y porciones SIEMPRE deben tener un valor estimado, nunca null.
 
 Responde SOLO con JSON válido sin backticks:
-{{"titulo":"nombre exacto de la receta","tiempo":"tiempo estimado","porciones":"porciones","dificultad":"Fácil/Media/Difícil","descripcion":"descripción corta apetitosa","ingredientes":["ingrediente 1 exacto","ingrediente 2"],"pasos":["paso 1 detallado","paso 2"],"tags":["tag1","tag2"]}}"""
+{{"titulo":"nombre exacto de la receta","tiempo":"tiempo estimado en minutos","porciones":"número de porciones","dificultad":"Fácil/Media/Difícil","descripcion":"descripción corta apetitosa","ingredientes":["ingrediente 1 exacto","ingrediente 2"],"pasos":["paso 1 detallado","paso 2","paso 3","paso 4"],"tags":["tag1","tag2"]}}"""
 
         parts = [prompt]
 
