@@ -8,7 +8,7 @@ import requests
 import re
 import base64
 import yt_dlp
-import tempfile
+import shutil
 
 app = FastAPI()
 
@@ -47,16 +47,17 @@ async def extraer_receta(req: VideoRequest):
         frames_b64 = []
 
         cookies_path = "/etc/secrets/cookies.txt"
-        cookies_exist = os.path.exists(cookies_path)
+        temp_cookies = "/tmp/cookies.txt"
 
         ydl_opts = {
             'quiet': True,
             'no_warnings': True,
             'skip_download': True,
         }
-        
-        if cookies_exist:
-            ydl_opts['cookiefile'] = cookies_path
+
+        if os.path.exists(cookies_path):
+            shutil.copy2(cookies_path, temp_cookies)
+            ydl_opts['cookiefile'] = temp_cookies
 
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(req.url, download=False)
