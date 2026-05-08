@@ -7,8 +7,6 @@ import json
 import requests
 import re
 import base64
-import yt_dlp
-import shutil
 
 app = FastAPI()
 
@@ -35,6 +33,12 @@ def get_youtube_id(url):
             return match.group(1)
     return None
 
+def get_tiktok_id(url):
+    match = re.search(r'tiktok\.com/@[^/]+/video/(\d+)', url)
+    if match:
+        return match.group(1)
+    return None
+
 @app.get("/")
 def root():
     return {"status": "Rezeap backend funcionando"}
@@ -44,51 +48,78 @@ async def extraer_receta(req: VideoRequest):
     try:
         titulo_video = ""
         descripcion = ""
-        frames_b64 = []
+        thumbnail_b64 = ""
+        plataforma = "desconocida"
 
-        cookies_path = "/etc/secrets/cookies.txt"
-        temp_cookies = "/tmp/cookies.txt"
+        # YouTube
+        video_id = get_youtube_id(req.url)
+        if video_id:
+            plataforma = "YouTube"
+            yt_api_key = os.environ.get("YOUTUBE_API_KEY")
+            if yt_api_key:
+                yt_resp = requests.get(
+                    f"https://www.googleapis.com/youtube/v3/videos?id={video_id}&part=snippet&key={yt_api_key}",
+                    timeout=10
+                )
+                yt_data = yt_resp.json()
+                if yt_data.get("items"):
+                    snippet = yt_data["items"][0]["snippet"]
+                    titulo_video = snippet.get("title", "")
+                    descripcion = snippet.get("description", "")
+                    thumbnail_url = snippet.get("thumbnails", {}).get("high", {}).get("url", "")
+                    if thumbnail_url:
+                        thumb_resp = requests.get(thumbnail_url, timeout=10)
+                        if thumb_resp.status_code == 200:
+                            thumbnail_b64 = base64.b64encode(thumb_resp.content).decode('utf-8')
 
-        ydl_opts = {
-            'quiet': True,
-            'no_warnings': True,
-            'skip_download': True,
-        }
+        # TikTok - usar oEmbed API (gratis, sin autenticación)
+        elif 'tiktok.com' in req.url:
+            plataforma = "TikTok"
+            oembed_resp = requests.get(
+                f"https://www.tiktok.com/oembed?url={req.url}",
+                timeout=10
+            )
+            if oembed_resp.status_code == 200:
+                oembed_data = oembed_resp.json()
+                titulo_video = oembed_data.get("title", "")
+                thumbnail_url = oembed_data.get("thumbnail_url", "")
+                if thumbnail_url:
+                    thumb_resp = requests.get(thumbnail_url, timeout=10)
+                    if thumb_resp.status_code == 200:
+                        thumbnail_b64 = base64.b64encode(thumb_resp.content).decode('utf-8')
 
-        if os.path.exists(cookies_path):
-            shutil.copy2(cookies_path, temp_cookies)
-            ydl_opts['cookiefile'] = temp_cookies
-
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(req.url, download=False)
-            titulo_video = info.get('title', '')
-            descripcion = info.get('description', '')
-            thumbnail_url = info.get('thumbnail', '')
-
-        if thumbnail_url:
-            thumb_resp = requests.get(thumbnail_url, timeout=10)
-            if thumb_resp.status_code == 200:
-                frames_b64.append(base64.b64encode(thumb_resp.content).decode('utf-8'))
+        # Instagram
+        elif 'instagram.com' in req.url:
+            plataforma = "Instagram"
+            oembed_resp = requests.get(
+                f"https://graph.facebook.com/v18.0/instagram_oembed?url={req.url}&access_token=placeholder",
+                timeout=10
+            )
 
         model = genai.GenerativeModel('gemini-2.5-flash')
 
         prompt = f"""Eres un experto en extraer recetas de cocina de videos de redes sociales.
 
+Plataforma: {plataforma}
 Título del video: {titulo_video if titulo_video else 'No disponible'}
 Descripción del video: {descripcion if descripcion else 'No disponible'}
+URL: {req.url}
 
-IMPORTANTE: Si la descripción tiene ingredientes y pasos, úsalos EXACTAMENTE como aparecen. No inventes ni cambies nada.
+IMPORTANTE: 
+- Si la descripción tiene ingredientes y pasos, úsalos EXACTAMENTE como aparecen.
+- Si no hay descripción, analiza la miniatura del video y el título para inferir la receta.
+- No inventes ingredientes que no estén en la descripción o visibles en la imagen.
 
 Responde SOLO con JSON válido sin backticks:
-{{"titulo":"nombre exacto","tiempo":"tiempo","porciones":"porciones","dificultad":"Fácil/Media/Difícil","descripcion":"descripción corta","ingredientes":["ingrediente 1 exacto","ingrediente 2"],"pasos":["paso 1","paso 2"],"tags":["tag1","tag2"]}}"""
+{{"titulo":"nombre exacto de la receta","tiempo":"tiempo estimado","porciones":"porciones","dificultad":"Fácil/Media/Difícil","descripcion":"descripción corta apetitosa","ingredientes":["ingrediente 1 exacto","ingrediente 2"],"pasos":["paso 1 detallado","paso 2"],"tags":["tag1","tag2"]}}"""
 
         parts = [prompt]
 
-        for frame in frames_b64:
+        if thumbnail_b64:
             parts.append({
                 "inline_data": {
                     "mime_type": "image/jpeg",
-                    "data": frame
+                    "data": thumbnail_b64
                 }
             })
 
@@ -97,7 +128,7 @@ Responde SOLO con JSON válido sin backticks:
         clean = text.replace('```json', '').replace('```', '').strip()
         receta = json.loads(clean)
 
-        return {"receta": receta, "titulo_video": titulo_video}
+        return {"receta": receta, "titulo_video": titulo_video, "plataforma": plataforma}
 
     except Exception as e:
         return {"error": str(e)}, 500
