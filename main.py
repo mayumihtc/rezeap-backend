@@ -46,7 +46,7 @@ async def extraer_receta(req: VideoRequest):
         plataforma = "desconocida"
 
         # YouTube
-        video_id = get_youtube_id(req.url)
+        video_id = get_youtube_id(req.url) if 'tiktok.com' not in req.url else None
         if video_id:
             plataforma = "YouTube"
             yt_api_key = os.environ.get("YOUTUBE_API_KEY")
