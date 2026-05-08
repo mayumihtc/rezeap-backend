@@ -6,6 +6,9 @@ import os
 import json
 import requests
 import re
+import base64
+import yt_dlp
+import tempfile
 
 app = FastAPI()
 
@@ -41,27 +44,30 @@ async def extraer_receta(req: VideoRequest):
     try:
         titulo_video = ""
         descripcion = ""
-        thumbnail_b64 = ""
+        frames_b64 = []
 
-        # YouTube
-        video_id = get_youtube_id(req.url)
-        if video_id:
-            yt_api_key = os.environ.get("YOUTUBE_API_KEY")
-            if yt_api_key:
-                yt_resp = requests.get(
-                    f"https://www.googleapis.com/youtube/v3/videos?id={video_id}&part=snippet&key={yt_api_key}"
-                )
-                yt_data = yt_resp.json()
-                if yt_data.get("items"):
-                    snippet = yt_data["items"][0]["snippet"]
-                    titulo_video = snippet.get("title", "")
-                    descripcion = snippet.get("description", "")
-                    thumbnail_url = snippet.get("thumbnails", {}).get("high", {}).get("url", "")
-                    if thumbnail_url:
-                        thumb_resp = requests.get(thumbnail_url, timeout=10)
-                        if thumb_resp.status_code == 200:
-                            import base64
-                            thumbnail_b64 = base64.b64encode(thumb_resp.content).decode('utf-8')
+        cookies_path = "/etc/secrets/cookies.txt"
+        cookies_exist = os.path.exists(cookies_path)
+
+        ydl_opts = {
+            'quiet': True,
+            'no_warnings': True,
+            'skip_download': True,
+        }
+        
+        if cookies_exist:
+            ydl_opts['cookiefile'] = cookies_path
+
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(req.url, download=False)
+            titulo_video = info.get('title', '')
+            descripcion = info.get('description', '')
+            thumbnail_url = info.get('thumbnail', '')
+
+        if thumbnail_url:
+            thumb_resp = requests.get(thumbnail_url, timeout=10)
+            if thumb_resp.status_code == 200:
+                frames_b64.append(base64.b64encode(thumb_resp.content).decode('utf-8'))
 
         model = genai.GenerativeModel('gemini-2.5-flash')
 
@@ -69,20 +75,19 @@ async def extraer_receta(req: VideoRequest):
 
 Título del video: {titulo_video if titulo_video else 'No disponible'}
 Descripción del video: {descripcion if descripcion else 'No disponible'}
-URL: {req.url}
 
-Extrae la receta exacta del video. Si la descripción tiene ingredientes y pasos úsalos exactamente. Si no, infiere basándote en el título.
+IMPORTANTE: Si la descripción tiene ingredientes y pasos, úsalos EXACTAMENTE como aparecen. No inventes ni cambies nada.
 
 Responde SOLO con JSON válido sin backticks:
-{{"titulo":"nombre exacto","tiempo":"tiempo","porciones":"porciones","dificultad":"Fácil/Media/Difícil","descripcion":"descripción corta","ingredientes":["ingrediente 1","ingrediente 2"],"pasos":["paso 1","paso 2"],"tags":["tag1","tag2"]}}"""
+{{"titulo":"nombre exacto","tiempo":"tiempo","porciones":"porciones","dificultad":"Fácil/Media/Difícil","descripcion":"descripción corta","ingredientes":["ingrediente 1 exacto","ingrediente 2"],"pasos":["paso 1","paso 2"],"tags":["tag1","tag2"]}}"""
 
         parts = [prompt]
 
-        if thumbnail_b64:
+        for frame in frames_b64:
             parts.append({
                 "inline_data": {
                     "mime_type": "image/jpeg",
-                    "data": thumbnail_b64
+                    "data": frame
                 }
             })
 
